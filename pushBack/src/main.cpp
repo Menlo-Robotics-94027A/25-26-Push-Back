@@ -1,5 +1,76 @@
 #include "main.h"
 
+// ========================================
+// MOTOR AND SENSOR SETUP
+// ========================================
+
+// Drive motors
+pros::MotorGroup left_motors({LEFT_FRONT_MOTOR_PORT, LEFT_MIDDLE_MOTOR_PORT, LEFT_BACK_MOTOR_PORT},
+                              pros::MotorGearset::blue); // or green/red depending on your cartridge
+pros::MotorGroup right_motors({RIGHT_FRONT_MOTOR_PORT, RIGHT_MIDDLE_MOTOR_PORT, RIGHT_BACK_MOTOR_PORT},
+                               pros::MotorGearset::blue);
+
+// IMU sensor
+pros::Imu imu(IMU_PORT);
+
+// Tracking wheels (if using external tracking wheels)
+// Comment these out if not using tracking wheels
+// pros::ADIEncoder left_tracking_wheel(LEFT_TRACKING_WHEEL_PORT, LEFT_TRACKING_WHEEL_PORT + 1, false);
+// pros::ADIEncoder right_tracking_wheel(RIGHT_TRACKING_WHEEL_PORT, RIGHT_TRACKING_WHEEL_PORT + 1, false);
+// pros::ADIEncoder back_tracking_wheel(BACK_TRACKING_WHEEL_PORT, BACK_TRACKING_WHEEL_PORT + 1, false);
+
+// ========================================
+// LEMLIB DRIVETRAIN SETUP
+// ========================================
+
+// Drivetrain settings
+lemlib::Drivetrain drivetrain(&left_motors,
+                               &right_motors,
+                               TRACK_WIDTH,
+                               WHEEL_DIAMETER,
+                               DRIVE_GEAR_RATIO,
+                               MAX_LINEAR_SPEED);
+
+// Lateral PID controller
+lemlib::ControllerSettings lateral_controller(LATERAL_KP,
+                                               LATERAL_KI,
+                                               LATERAL_KD,
+                                               LATERAL_SMALL_ERROR,
+                                               LATERAL_SMALL_ERROR_TIMEOUT,
+                                               LATERAL_LARGE_ERROR,
+                                               LATERAL_LARGE_ERROR_TIMEOUT);
+
+// Angular PID controller
+lemlib::ControllerSettings angular_controller(ANGULAR_KP,
+                                               ANGULAR_KI,
+                                               ANGULAR_KD,
+                                               ANGULAR_SMALL_ERROR,
+                                               ANGULAR_SMALL_ERROR_TIMEOUT,
+                                               ANGULAR_LARGE_ERROR,
+                                               ANGULAR_LARGE_ERROR_TIMEOUT);
+
+// Odometry configuration using drive encoders (integrated in motors)
+lemlib::OdomSensors sensors(nullptr, // left tracking wheel (nullptr = use left motor encoder)
+                             nullptr, // right tracking wheel (nullptr = use right motor encoder)
+                             nullptr, // back tracking wheel (nullptr = no horizontal tracking)
+                             nullptr, // left rotation sensor (nullptr = not used)
+                             nullptr, // right rotation sensor (nullptr = not used)
+                             &imu);   // IMU sensor
+
+// If using external tracking wheels, replace the above with:
+// lemlib::OdomSensors sensors(&left_tracking_wheel,
+//                              &right_tracking_wheel,
+//                              &back_tracking_wheel,
+//                              nullptr,
+//                              nullptr,
+//                              &imu);
+
+// Create the chassis
+lemlib::Chassis chassis(drivetrain,
+                        lateral_controller,
+                        angular_controller,
+                        sensors);
+
 /**
  * A callback function for LLEMU's center button.
  *
@@ -24,8 +95,26 @@ void on_center_button() {
  */
 void initialize() {
 	pros::lcd::initialize();
-	pros::lcd::set_text(1, "Hello PROS User!");
+	pros::lcd::set_text(1, "Initializing...");
 
+	// Calibrate the IMU (this takes about 2 seconds)
+	pros::lcd::set_text(2, "Calibrating IMU...");
+	imu.reset();
+	while (imu.is_calibrating()) {
+		pros::delay(10);
+	}
+	pros::lcd::set_text(2, "IMU Calibrated!");
+
+	// Calibrate the chassis (start odometry)
+	chassis.calibrate();
+	pros::lcd::set_text(3, "Chassis Calibrated!");
+
+	// Set the pose (starting position) to (0, 0, 0)
+	// Format: chassis.setPose(x, y, heading)
+	// x and y are in inches, heading is in degrees
+	chassis.setPose(0, 0, 0);
+
+	pros::lcd::set_text(1, "Ready!");
 	pros::lcd::register_btn1_cb(on_center_button);
 }
 
@@ -58,7 +147,40 @@ void competition_initialize() {}
  * will be stopped. Re-enabling the robot will restart the task, not re-start it
  * from where it left off.
  */
-void autonomous() {}
+void autonomous() {
+	// Example autonomous movements
+	// Adjust these values based on your robot and field requirements
+
+	// Move forward 24 inches
+	chassis.moveToPoint(0, 24, DEFAULT_TIMEOUT);
+
+	// Turn to face 90 degrees (right turn)
+	chassis.turnToHeading(90, DEFAULT_TIMEOUT);
+
+	// Move forward another 24 inches
+	chassis.moveToPoint(24, 24, DEFAULT_TIMEOUT);
+
+	// Turn to face 180 degrees
+	chassis.turnToHeading(180, DEFAULT_TIMEOUT);
+
+	// Move backward to starting position
+	chassis.moveToPoint(0, 0, DEFAULT_TIMEOUT);
+
+	// Turn back to 0 degrees
+	chassis.turnToHeading(0, DEFAULT_TIMEOUT);
+
+	/* Other useful LemLib functions:
+	 *
+	 * chassis.moveToPose(x, y, heading, timeout) - Move to a pose (position + heading)
+	 * chassis.follow(path, timeout, lookahead) - Follow a path (requires path generation)
+	 * chassis.turnToPoint(x, y, timeout) - Turn to face a point
+	 * chassis.getPose() - Get current position and heading
+	 *
+	 * You can also use these for more control:
+	 * chassis.tank(left, right) - Manual tank drive control
+	 * chassis.arcade(forward, turn) - Manual arcade drive control
+	 */
+}
 
 /**
  * Runs the operator control code. This function will be started in its own task
@@ -75,20 +197,29 @@ void autonomous() {}
  */
 void opcontrol() {
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
-	pros::MotorGroup left_mg({1, -2, 3});    // Creates a motor group with forwards ports 1 & 3 and reversed port 2
-	pros::MotorGroup right_mg({-4, 5, -6});  // Creates a motor group with forwards port 5 and reversed ports 4 & 6
-
 
 	while (true) {
-		pros::lcd::print(0, "%d %d %d", (pros::lcd::read_buttons() & LCD_BTN_LEFT) >> 2,
-		                 (pros::lcd::read_buttons() & LCD_BTN_CENTER) >> 1,
-		                 (pros::lcd::read_buttons() & LCD_BTN_RIGHT) >> 0);  // Prints status of the emulated screen LCDs
+		// Get joystick values
+		int left_y = master.get_analog(ANALOG_LEFT_Y);
+		int right_x = master.get_analog(ANALOG_RIGHT_X);
 
-		// Arcade control scheme
-		int dir = master.get_analog(ANALOG_LEFT_Y);    // Gets amount forward/backward from left joystick
-		int turn = master.get_analog(ANALOG_RIGHT_X);  // Gets the turn left/right from right joystick
-		left_mg.move(dir - turn);                      // Sets left motor voltage
-		right_mg.move(dir + turn);                     // Sets right motor voltage
-		pros::delay(20);                               // Run for 20 ms then update
+		// Apply deadzone
+		if (abs(left_y) < JOYSTICK_DEADZONE) left_y = 0;
+		if (abs(right_x) < JOYSTICK_DEADZONE) right_x = 0;
+
+		// Use LemLib's arcade control with drive curve
+		chassis.arcade(left_y, right_x);
+
+		// Display robot position on screen
+		lemlib::Pose pose = chassis.getPose();
+		pros::lcd::print(0, "X: %.2f  Y: %.2f", pose.x, pose.y);
+		pros::lcd::print(1, "Heading: %.2f", pose.theta);
+
+		// Optional: Press button A to run autonomous during driver control (for testing)
+		if (master.get_digital(DIGITAL_A)) {
+			autonomous();
+		}
+
+		pros::delay(10);
 	}
 }
